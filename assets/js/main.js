@@ -1,51 +1,8 @@
-// Synced side-by-side video comparison slider (drag to reveal)
-function initVSliders() {
-  document.querySelectorAll('.vslider').forEach((el) => {
-    const left = el.querySelector('video.left');
-    const right = el.querySelector('video.right');
-    const leftLayer = el.querySelector('.left-layer');
-    const handle = el.querySelector('.handle');
-    const knob = el.querySelector('.knob');
-    let dragging = false;
 
-    function setPos(pct) {
-      pct = Math.max(0, Math.min(100, pct));
-      leftLayer.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
-      handle.style.left = pct + '%';
-      knob.style.left = pct + '%';
-    }
-    setPos(50);
 
-    function posFromEvent(e) {
-      const r = el.getBoundingClientRect();
-      const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
-      return (x / r.width) * 100;
-    }
-
-    el.addEventListener('mousedown', (e) => { e.preventDefault(); dragging = true; setPos(posFromEvent(e)); });
-    el.addEventListener('touchstart', (e) => { dragging = true; setPos(posFromEvent(e)); }, { passive: true });
-    window.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      if (e.buttons === 0) { dragging = false; return; } // button released outside window/element
-      setPos(posFromEvent(e));
-    });
-    window.addEventListener('touchmove', (e) => { if (dragging) { e.preventDefault(); setPos(posFromEvent(e)); } }, { passive: false });
-    window.addEventListener('mouseup', () => dragging = false);
-    window.addEventListener('touchend', () => dragging = false);
-
-    // keep both videos frame-synced
-    if (left && right) {
-      left.addEventListener('play', () => { try { right.currentTime = left.currentTime; right.play(); } catch (e) {} });
-      right.pause();
-      left.addEventListener('seeked', () => { right.currentTime = left.currentTime; });
-    }
-  });
-}
-
-// Play/pause videos only while visible in viewport (saves bandwidth, avoids
-// dozens of videos decoding at once on load)
+// Play/pause teaser videos only while visible in viewport
 function initLazyPlay() {
-  const videos = document.querySelectorAll('video[data-lazyplay]');
+  const videos = document.querySelectorAll('.teaser-video');
   const io = new IntersectionObserver((entries) => {
     entries.forEach((entry) => {
       const v = entry.target;
@@ -59,73 +16,180 @@ function initLazyPlay() {
   videos.forEach((v) => io.observe(v));
 }
 
-// 2D image comparison: drag left/right = input vs ours, drag up/down = ours vs baseline
+// Global observer for pausing videos when they are not in the viewport
+const compViewportObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.dispatchEvent(new CustomEvent('viewport-enter'));
+    } else {
+      entry.target.dispatchEvent(new CustomEvent('viewport-leave'));
+    }
+  });
+}, { threshold: 0.1 });
+
+// Keep the three visible video layers on the same decoded frame. Seeking is
+// limited to panel/baseline changes and resume; seeking on every timeupdate
+// makes comparison widgets visibly jitter.
+class VideoSyncManager {
+  constructor(container, videos) {
+    this.container = container;
+    this.videos = Array.from(videos);
+    this.master = this.videos.find(v => v.classList.contains('input')) || this.videos[0];
+    this.isReady = false;
+    this.isInViewport = false;
+    this.destroyed = false;
+    this.starting = false;
+    this.videos.forEach(v => { v.loop = true; v.preload = 'auto'; });
+    this.onCanPlayHandler = this.onCanPlay.bind(this);
+    this.onViewportEnterHandler = this.onViewportEnter.bind(this);
+    this.onViewportLeaveHandler = this.onViewportLeave.bind(this);
+    this.init();
+  }
+
+  init() {
+    this.videos.forEach(v => v.addEventListener('canplay', this.onCanPlayHandler));
+    this.container.addEventListener('viewport-enter', this.onViewportEnterHandler);
+    this.container.addEventListener('viewport-leave', this.onViewportLeaveHandler);
+    compViewportObserver.observe(this.container);
+    this.checkReady();
+  }
+
+  onCanPlay() { this.checkReady(); }
+
+  checkReady() {
+    if (this.isReady) {
+      if (this.isInViewport && this.master.paused) this.startAll();
+      return;
+    }
+    if (this.videos.every(v => v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA)) {
+      this.isReady = true;
+      if (this.isInViewport) this.startAll(true);
+    }
+  }
+
+  seek(video, time) {
+    if (Math.abs(video.currentTime - time) < 0.01) return Promise.resolve();
+    return new Promise((resolve) => {
+      video.addEventListener('seeked', resolve, { once: true });
+      video.currentTime = time;
+    });
+  }
+
+  async startAll(forceSync = false) {
+    if (!this.isReady || this.starting || this.destroyed) return;
+    this.starting = true;
+    const time = this.master.currentTime || 0;
+    const outOfSync = forceSync
+      ? this.videos
+      : this.videos.filter(v => Math.abs(v.currentTime - time) > 0.04);
+    this.videos.forEach(v => v.pause());
+    await Promise.all(outOfSync.map(v => this.seek(v, time)));
+    if (!this.isInViewport || this.destroyed) {
+      this.starting = false;
+      return;
+    }
+    await Promise.all(this.videos.map(v => v.play().catch(err => {
+      if (err.name !== 'AbortError') console.warn('Video play error:', err);
+    })));
+    this.starting = false;
+  }
+
+  pauseAll() { this.videos.forEach(v => v.pause()); }
+  onViewportEnter() { this.isInViewport = true; this.checkReady(); }
+  onViewportLeave() { this.isInViewport = false; this.pauseAll(); }
+
+  destroy() {
+    this.destroyed = true;
+    compViewportObserver.unobserve(this.container);
+    this.videos.forEach(v => { v.removeEventListener('canplay', this.onCanPlayHandler); v.pause(); });
+    this.container.removeEventListener('viewport-enter', this.onViewportEnterHandler);
+    this.container.removeEventListener('viewport-leave', this.onViewportLeaveHandler);
+  }
+}
+
+const activeSyncManagers = new Map();
+
+function syncActivePanelVideos(targetId, activePanel) {
+  activeSyncManagers.get(targetId)?.destroy();
+  const comp = activePanel.querySelector('.comp2d');
+  const videos = comp?.querySelectorAll('video');
+  if (!videos?.length) return;
+  activeSyncManagers.set(targetId, new VideoSyncManager(comp, videos));
+}
+
+// 2D comparison: drag on the image or handle to reveal all three layers.
 function initComparison2D() {
   document.querySelectorAll('.comp2d').forEach((el) => {
-    const oursLayer = el.querySelector('.layer.ours');
-    const inputLayer = el.querySelector('.layer.input');
-    const baselineLayer = el.querySelector('.layer.baseline');
-    const vDiv = el.querySelector('.v-div');
-    const hDiv = el.querySelector('.h-div');
-    const crosshair = el.querySelector('.crosshair');
-    let dragging = false;
-
-    // if the layers are <video>, keep them frame-synced with the input video as master
-    if (inputLayer.tagName === 'VIDEO') {
-      const followers = [oursLayer, baselineLayer].filter((v) => v && v.tagName === 'VIDEO');
-      inputLayer.addEventListener('play', () => {
-        followers.forEach((v) => { v.currentTime = inputLayer.currentTime; v.play().catch(() => {}); });
-      });
-      inputLayer.addEventListener('pause', () => followers.forEach((v) => v.pause()));
-      inputLayer.addEventListener('seeked', () => followers.forEach((v) => v.currentTime = inputLayer.currentTime));
-      inputLayer.addEventListener('timeupdate', () => {
-        followers.forEach((v) => {
-          if (Math.abs(v.currentTime - inputLayer.currentTime) > 0.25) v.currentTime = inputLayer.currentTime;
-        });
-      });
-      followers.forEach((v) => v.pause());
-    }
+    let cachedRect = null;
+    let rafId = null;
+    let pendingX = 50, pendingY = 50;
 
     function setPos(x, y) {
       x = Math.max(0, Math.min(100, x));
       y = Math.max(0, Math.min(100, y));
-      oursLayer.style.clipPath = `inset(0 0 ${100 - y}% 0)`;
-      inputLayer.style.clipPath = `inset(0 ${100 - x}% 0 0)`;
-      vDiv.style.left = x + '%';
-      hDiv.style.top = y + '%';
-      hDiv.style.clipPath = `inset(0 0 0 ${x}%)`;
-      crosshair.style.left = x + '%';
-      crosshair.style.top = y + '%';
+      // Two properties fan out to every layer in CSS, avoiding six independent
+      // style updates on every pointer frame.
+      el.style.setProperty('--compare-x', `${x}%`);
+      el.style.setProperty('--compare-y', `${y}%`);
     }
-    setPos(50, 50);
 
     function posFromEvent(e) {
-      const r = el.getBoundingClientRect();
-      const p = e.touches ? e.touches[0] : e;
-      return { x: ((p.clientX - r.left) / r.width) * 100, y: ((p.clientY - r.top) / r.height) * 100 };
+      if (!cachedRect) cachedRect = el.getBoundingClientRect();
+      return {
+        x: ((e.clientX - cachedRect.left) / cachedRect.width) * 100,
+        y: ((e.clientY - cachedRect.top) / cachedRect.height) * 100
+      };
     }
 
-    el.addEventListener('mousedown', (e) => { e.preventDefault(); dragging = true; const p = posFromEvent(e); setPos(p.x, p.y); });
-    el.addEventListener('touchstart', (e) => { dragging = true; const p = posFromEvent(e); setPos(p.x, p.y); }, { passive: true });
-    window.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      if (e.buttons === 0) { dragging = false; return; } // button released outside window/element
+    function scheduleSetPos(x, y) {
+      pendingX = x;
+      pendingY = y;
+      if (!rafId) {
+        rafId = requestAnimationFrame(() => {
+          setPos(pendingX, pendingY);
+          rafId = null;
+        });
+      }
+    }
+
+    function startDrag(e) {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      el.classList.add('is-dragging');
+      cachedRect = el.getBoundingClientRect();
       const p = posFromEvent(e);
-      setPos(p.x, p.y);
-    });
-    window.addEventListener('touchmove', (e) => { if (dragging) { e.preventDefault(); const p = posFromEvent(e); setPos(p.x, p.y); } }, { passive: false });
-    window.addEventListener('mouseup', () => dragging = false);
-    window.addEventListener('touchend', () => dragging = false);
+      scheduleSetPos(p.x, p.y);
+    }
+
+    function moveDrag(e) {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      const p = posFromEvent(e);
+      scheduleSetPos(p.x, p.y);
+    }
+
+    function endDrag(e) {
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      el.classList.remove('is-dragging');
+      cachedRect = null;
+    }
+
+    el.addEventListener('pointerdown', startDrag);
+    el.addEventListener('pointermove', moveDrag);
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
+    window.addEventListener('resize', () => { cachedRect = null; });
   });
 
-  // baseline dropdown swaps the bottom layer's image + label
   document.querySelectorAll('.comp2d-wrap').forEach((wrap) => {
     const select = wrap.querySelector('.baseline-select');
     if (!select) return;
     select.addEventListener('change', () => {
       applyBaseline(wrap);
       const target = wrap.parentElement;
-      if (target && target.id) baselineIndexByTarget.set(target.id, select.selectedIndex);
+      if (target?.id) {
+        baselineIndexByTarget.set(target.id, select.selectedIndex);
+        syncActivePanelVideos(target.id, wrap);
+      }
     });
   });
 }
@@ -143,16 +207,8 @@ function applyBaseline(wrap) {
   baselineTag.textContent = opt.dataset.label;
 
   if (baselineLayer.tagName === 'VIDEO') {
-    const inputLayer = wrap.querySelector('.layer.input');
     baselineLayer.pause();
     baselineLayer.src = opt.value;
-    baselineLayer.load();
-    const onReady = () => {
-      if (inputLayer) baselineLayer.currentTime = inputLayer.currentTime;
-      if (inputLayer && !inputLayer.paused) baselineLayer.play().catch(() => {});
-      baselineLayer.removeEventListener('loadedmetadata', onReady);
-    };
-    baselineLayer.addEventListener('loadedmetadata', onReady);
   } else {
     baselineLayer.src = opt.value;
   }
@@ -185,21 +241,30 @@ function initSceneNav() {
 
     function show(i) {
       idx = (i + scenes.length) % scenes.length;
+      let activePanel = null;
       panels.forEach((p) => {
         const visible = p.dataset.scene === scenes[idx];
         const isComp2d = p.classList.contains('comp2d-wrap');
         p.style.display = visible ? (isComp2d ? 'block' : 'grid') : 'none';
-        if (visible && isComp2d) {
-          const select = p.querySelector('.baseline-select');
-          if (select && target.id && baselineIndexByTarget.has(target.id)) {
-            select.selectedIndex = baselineIndexByTarget.get(target.id);
+        if (visible) {
+          activePanel = p;
+          if (isComp2d) {
+            const select = p.querySelector('.baseline-select');
+            if (select && target.id && baselineIndexByTarget.has(target.id)) {
+              select.selectedIndex = baselineIndexByTarget.get(target.id);
+            }
+            applyBaseline(p);
           }
-          applyBaseline(p);
         }
       });
       dots.forEach((d, i) => {
         d.classList.toggle('active', i === idx);
       });
+
+      // Synchronize videos in the newly shown active panel
+      if (activePanel && target.id) {
+        syncActivePanelVideos(target.id, activePanel);
+      }
     }
 
     const prevBtn = carousel.querySelector('[data-nav="prev"]');
@@ -224,7 +289,6 @@ function initCopyBibtex() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  initVSliders();
   initLazyPlay();
   initComparison2D();
   initSceneNav();

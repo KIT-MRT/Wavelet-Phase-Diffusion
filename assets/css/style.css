@@ -637,6 +637,8 @@ figcaption, .fig-caption {
 }
 
 .comp2d {
+  --compare-x: 50%;
+  --compare-y: 50%;
   position: relative;
   width: 100%;
   border-radius: 10px;
@@ -653,9 +655,12 @@ figcaption, .fig-caption {
   -webkit-user-drag: none;
   user-select: none;
   pointer-events: none;
+  will-change: clip-path;
+  transform: translateZ(0);
 }
-.comp2d .layer.ours { clip-path: inset(0 0 50% 0); }
-.comp2d .layer.input { clip-path: inset(0 50% 0 0); }
+.comp2d .layer.ours { clip-path: polygon(var(--compare-x) 0, 100% 0, 100% var(--compare-y), var(--compare-x) var(--compare-y)); }
+.comp2d .layer.input { clip-path: inset(0 calc(100% - var(--compare-x)) 0 0); }
+.comp2d .layer.baseline { clip-path: polygon(var(--compare-x) var(--compare-y), 100% var(--compare-y), 100% 100%, var(--compare-x) 100%); }
 
 .instance-highlight {
   position: absolute;
@@ -681,23 +686,45 @@ figcaption, .fig-caption {
 }
 
 .comp2d .v-div {
-  position: absolute; top: 0; bottom: 0; left: 50%;
+  position: absolute; top: 0; bottom: 0; left: var(--compare-x);
   width: 2px; background: rgba(255,255,255,0.8);
-  transform: translateX(-50%); pointer-events: none;
+  transform: translateX(-50%) translateZ(0); pointer-events: none;
+  will-change: left;
 }
 .comp2d .h-div {
-  position: absolute; left: 0; right: 0; top: 50%;
+  position: absolute; right: 0; left: var(--compare-x); top: var(--compare-y);
   height: 2px; background: rgba(255,255,255,0.8);
-  transform: translateY(-50%); pointer-events: none;
-  clip-path: inset(0 0 0 50%);
+  transform: translateY(-50%) translateZ(0); pointer-events: none;
+  will-change: top, left;
 }
 .comp2d .crosshair {
-  position: absolute; left: 50%; top: 50%;
+  position: absolute; left: var(--compare-x); top: var(--compare-y);
   width: 34px; height: 34px; border-radius: 50%;
-  background: rgba(0,0,0,0.45); backdrop-filter: blur(6px);
-  border: 2px solid rgba(255,255,255,0.7);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
+  background: rgba(0,0,0,0.55); backdrop-filter: blur(6px);
+  border: 2px solid rgba(255,255,255,0.85);
+  transform: translate(-50%, -50%) translateZ(0);
+  pointer-events: auto;
+  cursor: grab;
+  will-change: left, top, transform, background;
+  box-shadow: 0 0 12px rgba(0,0,0,0.4);
+  transition: background 0.2s, border-color 0.2s, transform 0.1s ease;
+  z-index: 10;
+}
+.comp2d .crosshair:hover {
+  background: rgba(0,0,0,0.7);
+  border-color: #fff;
+  transform: translate(-50%, -50%) scale(1.15) translateZ(0);
+}
+.comp2d .crosshair:active {
+  cursor: grabbing;
+  transform: translate(-50%, -50%) scale(0.95) translateZ(0);
+}
+.comp2d.is-dragging .crosshair { cursor: grabbing; transition: none; }
+.comp2d .crosshair::after {
+  content: '';
+  position: absolute;
+  top: -15px; left: -15px; right: -15px; bottom: -15px;
+  border-radius: 50%;
 }
 .tag2d {
   position: absolute;
