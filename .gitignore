@@ -1,3 +1,10 @@
 .DS_Store
 *.swp
 node_modules/
+__pycache__/
+*.pyc
+.venv/
+/checkpoints/
+/models/
+/data/
+/outputs/

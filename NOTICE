@@ -1,0 +1,18 @@
+Wavelet-Phase-Diffusion
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software derived from DiffSynth-Studio
+(https://github.com/modelscope/DiffSynth-Studio), which is licensed under the
+Apache License, Version 2.0.
+
+The diffsynth/ directory is a modified, trimmed copy of DiffSynth-Studio.
+Changes made to the original source:
+  - Reduced to the components needed for FLUX and Wan (other model families
+    and unrelated modules were removed).
+  - Files in this directory may have been modified to support the
+    Wavelet-Phase-Diffusion pipelines in wpd/, train/ and inference/.
+  All files under diffsynth/ should be treated as modified from the original.
+
+The original copyright, patent, trademark and attribution notices of the
+upstream project are retained. A copy of the Apache License 2.0 is provided in
+the LICENSE file at the repository root.

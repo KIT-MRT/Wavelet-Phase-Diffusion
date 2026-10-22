@@ -1,0 +1,22 @@
+torch>=2.4.0
+torchvision
+transformers==4.49.0
+accelerate
+peft
+datasets
+huggingface_hub
+modelscope
+safetensors
+einops
+sentencepiece
+protobuf
+ftfy
+regex
+pandas
+requests
+imageio[ffmpeg]
+opencv-python-headless
+tensorboard
+PyWavelets
+pytorch_wavelets
+setuptools<81  # pytorch_wavelets imports pkg_resources
